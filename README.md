@@ -1,98 +1,97 @@
-<div align="center">
-
 # serwis-infra
 
-**Production AWS infrastructure for [serwis](https://github.com/faceitall123qwe-hub/serwis) (Next.js 16 + Postgres), as Terraform modules.**
-
 [![terraform](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml/badge.svg)](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml)
-![Terraform](https://img.shields.io/badge/Terraform_%E2%89%A51.10-844FBA?logo=terraform&logoColor=white)
-![AWS](https://img.shields.io/badge/AWS_provider_v6-232F3E?logo=amazonwebservices&logoColor=white)
-![ECS](https://img.shields.io/badge/ECS_Fargate-FF9900?logo=amazonecs&logoColor=white)
-![RDS](https://img.shields.io/badge/RDS_Postgres_16-527FFF?logo=amazonrds&logoColor=white)
-![tflint](https://img.shields.io/badge/tflint-AWS_ruleset-2ea44f)
 
-</div>
-
----
-
-## Architecture
+Terraform for running [serwis](https://github.com/faceitall123qwe-hub/serwis) (Next.js +
+Postgres) on AWS. The live demo of serwis runs on Vercel; this is how I'd run it on AWS. It's
+validated and linted in CI but I haven't applied it, so treat it as a reviewed design rather
+than something battle-tested.
 
 ```mermaid
 flowchart TB
-    U([Users]) -->|HTTPS · TLS 1.3 policy| ALB
-    subgraph VPC["VPC 10.20.0.0/16 · 2 AZs"]
-        subgraph PUB[Public subnets]
-            ALB[Application Load Balancer<br/>HTTP→HTTPS redirect]
+    U([Users]) -->|HTTPS| ALB
+    subgraph VPC["VPC, 2 availability zones"]
+        subgraph Public subnets
+            ALB[Application Load Balancer]
             NAT[NAT gateway]
         end
-        subgraph PRIV[Private subnets]
-            ECS[ECS Fargate · ARM64<br/>1–3 tasks · CPU autoscaling<br/>circuit breaker + rollback]
-            RDS[(RDS Postgres 16<br/>encrypted · force_ssl · 7-day backups)]
+        subgraph Private subnets
+            ECS[ECS Fargate, ARM64, 1-3 tasks]
+            RDS[(RDS Postgres 16)]
         end
-        ALB -->|SG → SG| ECS
-        ECS -->|5432 · SG → SG| RDS
+        ALB --> ECS
+        ECS -->|5432| RDS
         ECS --> NAT
     end
-    NAT --> EXT[Resend · Telegram · Turnstile]
-    SM[Secrets Manager] -.injected at start.-> ECS
-    EB[EventBridge cron 07:00] -->|Bearer token| ALB
-    GH[GitHub Actions] -->|OIDC · main only| ECR[ECR] --> ECS
-    CW[CloudWatch alarms<br/>+ AWS Budgets] --> SNS[SNS e-mail]
+    NAT --> EXT[Resend, Telegram, Turnstile]
+    SM[Secrets Manager] -.-> ECS
+    EB[EventBridge cron] -->|daily report| ALB
+    GH[GitHub Actions] -->|OIDC| ECR --> ECS
 ```
 
 ## Layout
 
 ```
-bootstrap/              S3 state bucket (versioned, KMS, TLS-only, public access blocked)
-modules/network/        VPC, 2 AZ public/private subnets, IGW, NAT, REJECT flow logs
-modules/database/       RDS Postgres, parameter group (force_ssl), SG from app only
-modules/app/            ECR, ECS cluster/service/task, ALB, Secrets Manager, cron, autoscaling
-modules/github-oidc/    OIDC provider + least-privilege deploy role
-envs/prod/              composition, alarms, budget
+bootstrap/            S3 bucket for remote state
+modules/network/      VPC, public and private subnets, NAT, flow logs for rejected traffic
+modules/database/     RDS Postgres, parameter group with forced SSL
+modules/app/          ECR, ECS cluster and service, ALB, secrets, cron, autoscaling
+modules/github-oidc/  role that GitHub Actions assumes to deploy
+envs/prod/            wires the modules together, plus alarms and a cost budget
 ```
 
-## Design decisions
+## Decisions
 
-| Decision | Why |
-|---|---|
-| Fargate over EC2 / App Runner | No hosts to patch; App Runner lacks VPC-private RDS ergonomics and fine-grained ALB control |
-| Tasks in private subnets, single NAT | DB and tasks have no public IPs. One NAT instead of one per AZ saves ~$32/mo; egress is a single-AZ dependency, accepted for a one-person business |
-| `manage_master_user_password` | RDS generates and rotates the master password in Secrets Manager; it never touches TF state |
-| App secret created empty | Terraform owns the secret's ARN and IAM, values are written out-of-band so API keys stay out of state |
-| Execution role scoped to two secret ARNs, task role empty | The app calls no AWS APIs; least privilege by default |
-| `ignore_changes = [task_definition]` | CI owns image rollouts; `terraform apply` won't roll back a deploy |
-| OIDC deploy role pinned to `repo:…:ref:refs/heads/main` | No long-lived AWS keys in GitHub; feature branches can't deploy |
-| Native S3 state locking (`use_lockfile`) | Terraform ≥ 1.10 doesn't need a DynamoDB lock table |
-| ARM64 tasks | ~20% cheaper per vCPU than x86 on Fargate |
+- **Fargate, not EC2 or App Runner.** No servers to patch, and it keeps the ALB and VPC setup
+  under my control, which App Runner doesn't.
+- **App and database in private subnets, one NAT gateway.** Nothing but the load balancer
+  has a public IP. A NAT per zone would cost about $32/month more; for a one-person business
+  I accept that outbound traffic depends on one zone.
+- **Database password managed by RDS** (`manage_master_user_password`). It's generated and
+  rotated in Secrets Manager and never appears in Terraform state.
+- **App secrets are created empty.** Terraform creates the secret and the IAM permission to
+  read it; I fill in the values with the AWS CLI, so API keys don't end up in state either.
+- **Minimal IAM.** The task execution role can read exactly two secrets. The app doesn't call
+  AWS at all, so its task role has no permissions.
+- **Deploys from CI, not from Terraform.** The ECS service ignores task definition changes,
+  so `terraform apply` won't roll back a deploy that GitHub Actions made.
+- **No AWS keys in GitHub.** Actions gets short-lived credentials through OIDC, and only for
+  the `main` branch of the app repo.
+- **State locking without DynamoDB.** Terraform 1.10+ can lock directly in S3.
+- **ARM tasks.** About 20% cheaper on Fargate than x86 for the same CPU.
 
 ## Usage
 
 ```bash
-# 1. state bucket (once)
+# once: bucket for state
 cd bootstrap && terraform init && terraform apply
 
-# 2. environment
 cd ../envs/prod
-cp backend.hcl.example backend.hcl              # bucket name from step 1
+cp backend.hcl.example backend.hcl            # bucket name from the step above
 cp terraform.tfvars.example terraform.tfvars
 terraform init -backend-config=backend.hcl
 terraform plan
 
-# 3. after apply: app secrets (JSON with DATABASE_URL, SESSION_SECRET, ...)
+# after apply, put the app's secrets in (JSON with DATABASE_URL, SESSION_SECRET, ...)
 aws secretsmanager put-secret-value \
   --secret-id "$(terraform output -raw app_secret_arn)" \
   --secret-string file://app-secret.json
-
-# 4. set the repo variable AWS_DEPLOY_ROLE_ARN in serwis and run its deploy-aws workflow
 ```
 
-Rough monthly cost (eu-central-1, 1 task, single-AZ RDS): ALB ~$20, NAT ~$35,
-Fargate 0.25 vCPU/0.5 GB ARM ~$8, RDS t4g.micro ~$15, plus logs/secrets — about **$80**,
-which is what the budget alarm defaults to.
+Then set `AWS_DEPLOY_ROLE_ARN` as a repository variable in serwis and run its `deploy-aws`
+workflow.
+
+## Cost
+
+Roughly $80/month in eu-central-1 with one task and a single-zone database: load balancer
+~$20, NAT ~$35, Fargate ~$8, RDS t4g.micro ~$15, plus logs and secrets. The budget alarm is
+set to that number.
 
 ## CI
 
-`.github/workflows/terraform.yml`: `fmt -check`, `validate` (no backend), `tflint` with the
-AWS ruleset, and Checkov (soft-fail) on every push and PR.
+`terraform fmt -check`, `terraform validate`, tflint with the AWS rules, and Checkov
+(reported, not blocking).
 
-> This stack has been validated and linted but not applied: the live demo runs on Vercel.
+## License
+
+MIT
