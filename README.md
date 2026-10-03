@@ -1,31 +1,43 @@
+<div align="center">
+
 # serwis-infra
 
-Terraform for running [serwis](https://github.com/faceitall123qwe-hub/serwis)
-(Next.js 16 + Postgres) on AWS, as a production alternative to the Vercel deployment.
+**Production AWS infrastructure for [serwis](https://github.com/faceitall123qwe-hub/serwis) (Next.js 16 + Postgres), as Terraform modules.**
 
-```
-                Internet
-                   │
-          ┌────────▼────────┐  HTTP → 301 HTTPS, TLS 1.3 policy
-          │  ALB (public)   │  drop invalid headers
-          └────────┬────────┘
-     public subnets│ AZ a / AZ b         NAT GW (single) ──► Resend, Telegram, Turnstile
-  ─────────────────┼──────────────────────────▲──────────────────────────
-     private       │                          │
-          ┌────────▼────────┐                 │
-          │ ECS Fargate     │─────────────────┘
-          │ ARM64, 1–3 tasks│  secrets injected from Secrets Manager
-          │ CPU autoscaling │  circuit breaker + auto rollback
-          └────────┬────────┘
-                   │ 5432, SG → SG only, TLS forced
-          ┌────────▼────────┐
-          │ RDS Postgres 16 │  encrypted gp3, 7-day backups,
-          │ db.t4g.micro    │  master password managed by RDS
-          └─────────────────┘
+[![terraform](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml/badge.svg)](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml)
+![Terraform](https://img.shields.io/badge/Terraform_%E2%89%A51.10-844FBA?logo=terraform&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS_provider_v6-232F3E?logo=amazonwebservices&logoColor=white)
+![ECS](https://img.shields.io/badge/ECS_Fargate-FF9900?logo=amazonecs&logoColor=white)
+![RDS](https://img.shields.io/badge/RDS_Postgres_16-527FFF?logo=amazonrds&logoColor=white)
+![tflint](https://img.shields.io/badge/tflint-AWS_ruleset-2ea44f)
 
-EventBridge (cron 07:00 UTC) ──Bearer──► /api/cron/daily-brief   (replaces vercel.json crons)
-GitHub Actions ──OIDC──► deploy role (ECR push + ECS update, main branch only)
-CloudWatch alarms + AWS Budgets ──► SNS e-mail
+</div>
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    U([Users]) -->|HTTPS · TLS 1.3 policy| ALB
+    subgraph VPC["VPC 10.20.0.0/16 · 2 AZs"]
+        subgraph PUB[Public subnets]
+            ALB[Application Load Balancer<br/>HTTP→HTTPS redirect]
+            NAT[NAT gateway]
+        end
+        subgraph PRIV[Private subnets]
+            ECS[ECS Fargate · ARM64<br/>1–3 tasks · CPU autoscaling<br/>circuit breaker + rollback]
+            RDS[(RDS Postgres 16<br/>encrypted · force_ssl · 7-day backups)]
+        end
+        ALB -->|SG → SG| ECS
+        ECS -->|5432 · SG → SG| RDS
+        ECS --> NAT
+    end
+    NAT --> EXT[Resend · Telegram · Turnstile]
+    SM[Secrets Manager] -.injected at start.-> ECS
+    EB[EventBridge cron 07:00] -->|Bearer token| ALB
+    GH[GitHub Actions] -->|OIDC · main only| ECR[ECR] --> ECS
+    CW[CloudWatch alarms<br/>+ AWS Budgets] --> SNS[SNS e-mail]
 ```
 
 ## Layout
