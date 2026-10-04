@@ -16,7 +16,7 @@ variable "certificate_arn" {
 
 variable "github_repo" {
   type    = string
-  default = "faceitall123qwe-hub/serwis"
+  default = "faceitall123qwe-hub/repair-shop-app"
 }
 
 variable "base_lat" {

@@ -1,9 +1,9 @@
-# serwis-infra
+# repair-shop-aws-terraform
 
-[![terraform](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml/badge.svg)](https://github.com/faceitall123qwe-hub/serwis-infra/actions/workflows/terraform.yml)
+[![terraform](https://github.com/faceitall123qwe-hub/repair-shop-aws-terraform/actions/workflows/terraform.yml/badge.svg)](https://github.com/faceitall123qwe-hub/repair-shop-aws-terraform/actions/workflows/terraform.yml)
 
-Terraform for running [serwis](https://github.com/faceitall123qwe-hub/serwis) (Next.js +
-Postgres) on AWS. The live demo of serwis runs on Vercel; this is how I'd run it on AWS. It's
+Terraform for running [repair-shop-app](https://github.com/faceitall123qwe-hub/repair-shop-app) (Next.js +
+Postgres) on AWS. The live demo runs on Vercel; this is how I'd run it on AWS. It's
 validated and linted in CI but I haven't applied it, so treat it as a reviewed design rather
 than something battle-tested.
 
